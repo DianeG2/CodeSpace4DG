@@ -1,1 +1,41 @@
 from pyspark.sql import SparkSession 
+spark = SparkSession.builder.appName("SparkDemo").master("yarn").getOrCreate()
+import pandas as pd 
+from mlxtend.frequent_patterns import apriori 
+from mlxtend.frequent_patterns import association_rules 
+pandas_df = pd.read_excel('./Online_Retail.xlsx') 
+pandas_df.to_csv('./Online_Retail.csv', index=False)
+spark = SparkSession.builder.getOrCreate() 
+df = spark.read.csv('/user/bd211820117/Online_Retail.csv',header=True, inferSchema=True) 
+df.show(10)
+data = df.select('InvoiceNo', 'StockCode').rdd.reduceByKey(lambda a, b: a + ',' + b) 
+data = data.map(lambda x: x[1].split(','))
+data.take(10)
+unique_data = data.map(lambda x: list(set(x)))
+unique_data.count()
+from pyspark.mllib.fpm import FPGrowth 
+model = FPGrowth.train(unique_data, 0.03) 
+fre_item = sorted(model.freqItemsets().collect())
+# 将rdd存入csv文件中， 再调用spark读取为DataFrame格式
+t = unique_data.map(lambda x: ' '.join(x))
+t.saveAsTextFile('unique_data.csv') 
+from pyspark.sql.functions import split 
+data = (spark.read
+  .csv("unique_data.csv")
+  .select(split("_c0", " ").alias("items")))
+from pyspark.ml.fpm import FPGrowth 
+fp = FPGrowth(minSupport=0.01, minConfidence=0.5) 
+fpm = fp.fit(data) 
+fpm.freqItemsets.show() 
+fpm.associationRules.show()
+from pyspark.sql.functions import desc 
+rules = fpm.associationRules.orderBy(desc('lift'))
+df2 = df.dropna().select('StockCode', 'Description').distinct() 
+code_items = {} 
+for r in df2.collect():
+ code_items[r['StockCode']] = r['Description']
+
+from pyspark.sql.functions import udf 
+item_udf = udf(lambda x: [code_items[code] for code in x]) 
+rules_with_name = rules.withColumn('antecedent', item_udf('antecedent')).withColumn('consequent', item_udf('consequent'))
+rules_with_name.show(20, False)
